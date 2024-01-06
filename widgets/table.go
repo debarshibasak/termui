@@ -1,192 +1,136 @@
-package termui
+// Copyright 2017 Zack Guo <zack.y.guo@gmail.com>. All rights reserved.
+// Use of this source code is governed by a MIT license that can
+// be found in the LICENSE file.
+
+package widgets
 
 import (
 	"image"
-	"log"
-	"strings"
 
 	. "github.com/gizak/termui/v3"
 )
 
+/*Table is like:
+┌ Awesome Table ───────────────────────────────────────────────┐
+│  Col0          | Col1 | Col2 | Col3  | Col4  | Col5  | Col6  |
+│──────────────────────────────────────────────────────────────│
+│  Some Item #1  | AAA  | 123  | CCCCC | EEEEE | GGGGG | IIIII |
+│──────────────────────────────────────────────────────────────│
+│  Some Item #2  | BBB  | 456  | DDDDD | FFFFF | HHHHH | JJJJJ |
+└──────────────────────────────────────────────────────────────┘
+*/
 type Table struct {
-	*Block
+	Block
+	Rows          [][]string
+	ColumnWidths  []int
+	TextStyle     Style
+	RowSeparator  bool
+	TextAlignment Alignment
+	RowStyles     map[int]Style
+	FillRow       bool
 
-	Header []string
-	Rows   [][]string
-
-	ColWidths []int
-	ColGap    int
-	PadLeft   int
-
-	ShowCursor  bool
-	CursorColor Color
-
-	UniqueCol    int    // the column used to uniquely identify each table row
-	SelectedItem string // used to keep the cursor on the correct item if the data changes
-	SelectedRow  int
-	TopRow       int // used to indicate where in the table we are scrolled at
-
-	ColResizer func()
+	// ColumnResizer is called on each Draw. Can be used for custom column sizing.
+	ColumnResizer func()
 }
 
-// NewTable returns a new Table instance
 func NewTable() *Table {
 	return &Table{
-		Block:       NewBlock(),
-		SelectedRow: 0,
-		TopRow:      0,
-		UniqueCol:   0,
-		ColResizer:  func() {},
+		Block:         *NewBlock(),
+		TextStyle:     Theme.Table.Text,
+		RowSeparator:  true,
+		RowStyles:     make(map[int]Style),
+		ColumnResizer: func() {},
 	}
 }
 
 func (self *Table) Draw(buf *Buffer) {
 	self.Block.Draw(buf)
 
-	self.ColResizer()
+	self.ColumnResizer()
 
-	// finds exact column starting position
-	colXPos := []int{}
-	cur := 1 + self.PadLeft
-	for _, w := range self.ColWidths {
-		colXPos = append(colXPos, cur)
-		cur += w
-		cur += self.ColGap
-	}
-
-	// prints header
-	for i, h := range self.Header {
-		width := self.ColWidths[i]
-		if width == 0 {
-			continue
+	columnWidths := self.ColumnWidths
+	if len(columnWidths) == 0 {
+		columnCount := len(self.Rows[0])
+		columnWidth := self.Inner.Dx() / columnCount
+		for i := 0; i < columnCount; i++ {
+			columnWidths = append(columnWidths, columnWidth)
 		}
-		// don't render column if it doesn't fit in widget
-		if width > (self.Inner.Dx()-colXPos[i])+1 {
-			continue
+	}
+
+	yCoordinate := self.Inner.Min.Y
+
+	// draw rows
+	for i := 0; i < len(self.Rows) && yCoordinate < self.Inner.Max.Y; i++ {
+		row := self.Rows[i]
+		colXCoordinate := self.Inner.Min.X
+
+		rowStyle := self.TextStyle
+		// get the row style if one exists
+		if style, ok := self.RowStyles[i]; ok {
+			rowStyle = style
 		}
-		buf.SetString(
-			h,
-			NewStyle(Theme.Default.Fg, ColorClear, ModifierBold),
-			image.Pt(self.Inner.Min.X+colXPos[i]-1, self.Inner.Min.Y),
-		)
-	}
 
-	if self.TopRow < 0 {
-		log.Printf("table widget TopRow value less than 0. TopRow: %v", self.TopRow)
-		return
-	}
+		if self.FillRow {
+			blankCell := NewCell(' ', rowStyle)
+			buf.Fill(blankCell, image.Rect(self.Inner.Min.X, yCoordinate, self.Inner.Max.X, yCoordinate+1))
+		}
 
-	// prints each row
-	for rowNum := self.TopRow; rowNum < self.TopRow+self.Inner.Dy()-1 && rowNum < len(self.Rows); rowNum++ {
-		row := self.Rows[rowNum]
-		y := (rowNum + 2) - self.TopRow
-
-		// prints cursor
-		style := NewStyle(Theme.Default.Fg)
-		if self.ShowCursor {
-			if (self.SelectedItem == "" && rowNum == self.SelectedRow) || (self.SelectedItem != "" && self.SelectedItem == row[self.UniqueCol]) {
-				style.Fg = self.CursorColor
-				style.Modifier = ModifierReverse
-				for _, width := range self.ColWidths {
-					if width == 0 {
-						continue
+		// draw row cells
+		for j := 0; j < len(row); j++ {
+			col := ParseStyles(row[j], rowStyle)
+			// draw row cell
+			if len(col) > columnWidths[j] || self.TextAlignment == AlignLeft {
+				for _, cx := range BuildCellWithXArray(col) {
+					k, cell := cx.X, cx.Cell
+					if k == columnWidths[j] || colXCoordinate+k == self.Inner.Max.X {
+						cell.Rune = ELLIPSES
+						buf.SetCell(cell, image.Pt(colXCoordinate+k-1, yCoordinate))
+						break
+					} else {
+						buf.SetCell(cell, image.Pt(colXCoordinate+k, yCoordinate))
 					}
-					buf.SetString(
-						strings.Repeat(" ", self.Inner.Dx()),
-						style,
-						image.Pt(self.Inner.Min.X, self.Inner.Min.Y+y-1),
-					)
 				}
-				self.SelectedItem = row[self.UniqueCol]
-				self.SelectedRow = rowNum
+			} else if self.TextAlignment == AlignCenter {
+				xCoordinateOffset := (columnWidths[j] - len(col)) / 2
+				stringXCoordinate := xCoordinateOffset + colXCoordinate
+				for _, cx := range BuildCellWithXArray(col) {
+					k, cell := cx.X, cx.Cell
+					buf.SetCell(cell, image.Pt(stringXCoordinate+k, yCoordinate))
+				}
+			} else if self.TextAlignment == AlignRight {
+				stringXCoordinate := MinInt(colXCoordinate+columnWidths[j], self.Inner.Max.X) - len(col)
+				for _, cx := range BuildCellWithXArray(col) {
+					k, cell := cx.X, cx.Cell
+					buf.SetCell(cell, image.Pt(stringXCoordinate+k, yCoordinate))
+				}
 			}
+			colXCoordinate += columnWidths[j] + 1
 		}
 
-		// prints each col of the row
-		for i, width := range self.ColWidths {
-			if width == 0 {
-				continue
+		// draw vertical separators
+		separatorStyle := self.Block.BorderStyle
+
+		separatorXCoordinate := self.Inner.Min.X
+		verticalCell := NewCell(VERTICAL_LINE, separatorStyle)
+		for i, width := range columnWidths {
+			if self.FillRow && i < len(columnWidths)-1 {
+				verticalCell.Style.Bg = rowStyle.Bg
+			} else {
+				verticalCell.Style.Bg = self.Block.BorderStyle.Bg
 			}
-			// don't render column if width is greater than distance to end of widget
-			if width > (self.Inner.Dx()-colXPos[i])+1 {
-				continue
-			}
-			r := TrimString(row[i], width)
-			buf.SetString(
-				r,
-				style,
-				image.Pt(self.Inner.Min.X+colXPos[i]-1, self.Inner.Min.Y+y-1),
-			)
+
+			separatorXCoordinate += width
+			buf.SetCell(verticalCell, image.Pt(separatorXCoordinate, yCoordinate))
+			separatorXCoordinate++
 		}
-	}
-}
 
-// Scrolling ///////////////////////////////////////////////////////////////////
+		yCoordinate++
 
-// calcPos is used to calculate the cursor position and the current view into the table.
-func (self *Table) calcPos() {
-	self.SelectedItem = ""
-
-	if self.SelectedRow < 0 {
-		self.SelectedRow = 0
-	}
-	if self.SelectedRow < self.TopRow {
-		self.TopRow = self.SelectedRow
-	}
-
-	if self.SelectedRow > len(self.Rows)-1 {
-		self.SelectedRow = len(self.Rows) - 1
-	}
-	if self.SelectedRow > self.TopRow+(self.Inner.Dy()-2) {
-		self.TopRow = self.SelectedRow - (self.Inner.Dy() - 2)
-	}
-}
-
-func (self *Table) ScrollUp() {
-	self.SelectedRow--
-	self.calcPos()
-}
-
-func (self *Table) ScrollDown() {
-	self.SelectedRow++
-	self.calcPos()
-}
-
-func (self *Table) ScrollTop() {
-	self.SelectedRow = 0
-	self.calcPos()
-}
-
-func (self *Table) ScrollBottom() {
-	self.SelectedRow = len(self.Rows) - 1
-	self.calcPos()
-}
-
-func (self *Table) ScrollHalfPageUp() {
-	self.SelectedRow = self.SelectedRow - (self.Inner.Dy()-2)/2
-	self.calcPos()
-}
-
-func (self *Table) ScrollHalfPageDown() {
-	self.SelectedRow = self.SelectedRow + (self.Inner.Dy()-2)/2
-	self.calcPos()
-}
-
-func (self *Table) ScrollPageUp() {
-	self.SelectedRow -= (self.Inner.Dy() - 2)
-	self.calcPos()
-}
-
-func (self *Table) ScrollPageDown() {
-	self.SelectedRow += (self.Inner.Dy() - 2)
-	self.calcPos()
-}
-
-func (self *Table) HandleClick(x, y int) {
-	x = x - self.Min.X
-	y = y - self.Min.Y
-	if (x > 0 && x <= self.Inner.Dx()) && (y > 0 && y <= self.Inner.Dy()) {
-		self.SelectedRow = (self.TopRow + y) - 2
-		self.calcPos()
+		// draw horizontal separator
+		horizontalCell := NewCell(HORIZONTAL_LINE, separatorStyle)
+		if self.RowSeparator && yCoordinate < self.Inner.Max.Y && i != len(self.Rows)-1 {
+			buf.Fill(horizontalCell, image.Rect(self.Inner.Min.X, yCoordinate, self.Inner.Max.X, yCoordinate+1))
+			yCoordinate++
+		}
 	}
 }
